@@ -1,0 +1,37 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+ENV/
+env/
+.venv/
+
+# macOS files
+.DS_Store
+
+# Windows files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Audio files (optional — remove if you want to include them!)
+# Uncomment this if you want to avoid pushing .wav/.mp3 files
+# sounds/*.wav
+# sounds/*.mp3
+
+# IDE/project settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Logs
+*.log
+
+# PyInstaller build files
+dist/
+build/
+*.spec
