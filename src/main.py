@@ -10,8 +10,8 @@ hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.6
 
 # Webcam setup
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
 
 last_y = None
 cooldown = 0

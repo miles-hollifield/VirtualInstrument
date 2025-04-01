@@ -32,9 +32,9 @@ def detect_chord(hand_landmarks):
 
     if finger_ids == {8, 12}:  # Index & Middle
         return "C_major"
-    elif finger_ids == {8, 16, 20}:  # Index, Ring, Pinky
+    elif finger_ids == {8, 12, 16}:  # Index, Middle & Ring
         return "G_major"
-    elif finger_ids == {8, 16}:  # Index & Ring
+    elif finger_ids == {8, 12, 16, 20}:  # Index, Middle, Ring & Pinky
         return "D_major"
     else:
         return None
