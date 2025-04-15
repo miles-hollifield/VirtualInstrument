@@ -3,11 +3,34 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import math
+import time
 from pyo import *
+import queue
+import threading
 
 player = None
 hands_detected = False
 pitch_shifter = None  # Added for pitch control
+audio_buffer = queue.Queue(maxsize=100)  # Buffer to store audio samples for visualization
+is_recording = True  # Flag to control the recording thread
+
+# Function to continuously record audio data for visualization
+def record_audio_data():
+    global is_recording
+    # Create a simple audio recorder to get waveform data
+    recorder = PeakAmp(pitch_shifter, function=lambda x, y: audio_buffer_update(max(x, y)))
+    
+    while is_recording:
+        time.sleep(0.01)  # Small sleep to prevent CPU hogging
+        
+def audio_buffer_update(amp):
+    # Add amplitude to buffer, remove old values if full
+    try:
+        if audio_buffer.full():
+            audio_buffer.get_nowait()  # Remove oldest value
+        audio_buffer.put_nowait(amp)  # Add new value
+    except:
+        pass  # Ignore if buffer operations fail
 
 # === Setup Pyo Server ===
 s = Server().boot()
@@ -37,6 +60,11 @@ def load_track(index):
 
 load_track(current_track_index)
 
+# Start the audio recording thread
+recording_thread = threading.Thread(target=record_audio_data)
+recording_thread.daemon = True  # Thread will exit when main program exits
+recording_thread.start()
+
 # === MediaPipe Setup ===
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(min_detection_confidence=0.7,
@@ -65,8 +93,15 @@ def hz_to_transpo(hz):
 
 # === Webcam ===
 cap = cv2.VideoCapture(0)
+
+# Set resolution to 1280x720
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+# Get actual dimensions (camera might not support exactly 1280x720)
 frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+print(f"Camera resolution set to: {frame_width}x{frame_height}")
 print("Hand DJ (Pyo) Started - [Q]uit, [N]ext, [P]revious, [R]eset")
 
 while cap.isOpened():
@@ -140,16 +175,12 @@ while cap.isOpened():
         # For Harmonizer, we need semitones relative to original pitch
         pitch_transpo = hz_to_transpo(pitch_hz) - hz_to_transpo(440)
         
-        # Apply transposition to the Harmonizer without affecting speed
+        # Apply transposition to the Harmonizer
         pitch_shifter.setTranspo(pitch_transpo)
 
-    # Don't draw full hand landmarks
-    # for hand in results.multi_hand_landmarks or []:
-    #     mp_drawing.draw_landmarks(frame, hand, mp_hands.HAND_CONNECTIONS)
-    
-    # Draw visual indicators for pinch and pinch center distance
+    # Draw visual indicators
     if left_hand and right_hand:
-        # Get pinch points
+        # Get pinch points (normalized coordinates)
         left_thumb = left_hand.landmark[mp_hands.HandLandmark.THUMB_TIP]
         left_index = left_hand.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
         right_thumb = right_hand.landmark[mp_hands.HandLandmark.THUMB_TIP]
@@ -161,7 +192,7 @@ while cap.isOpened():
         right_thumb_px = (int(right_thumb.x * frame_width), int(right_thumb.y * frame_height))
         right_index_px = (int(right_index.x * frame_width), int(right_index.y * frame_height))
         
-        # Calculate center of pinch lines
+        # Calculate center of pinch lines in pixels
         left_pinch_center = (
             (left_thumb_px[0] + left_index_px[0]) // 2,
             (left_thumb_px[1] + left_index_px[1]) // 2
@@ -171,48 +202,129 @@ while cap.isOpened():
             (right_thumb_px[1] + right_index_px[1]) // 2
         )
         
-        # Draw lines between pinch points
-        cv2.line(frame, left_thumb_px, left_index_px, (0, 255, 0), 2)  # Green line for left hand pinch
-        cv2.line(frame, right_thumb_px, right_index_px, (0, 0, 255), 2)  # Red line for right hand pinch
+        # Draw the white connecting line between pinch centers
+        cv2.line(frame, left_pinch_center, right_pinch_center, (255, 255, 255), 2)
         
-        # Draw dots at center of pinch lines
-        cv2.circle(frame, left_pinch_center, 8, (255, 255, 0), -1)  # Yellow dot for left pinch center
-        cv2.circle(frame, right_pinch_center, 8, (255, 255, 0), -1)  # Yellow dot for right pinch center
+        # Draw circles at pinch points (thumb and index of each hand)
+        circle_radius = 12
+        circle_color = (255, 255, 255)  # White circles
+        circle_thickness = 2
         
-        # Draw line between pinch centers
-        cv2.line(frame, left_pinch_center, right_pinch_center, (255, 255, 255), 2)  # White line for volume control
+        cv2.circle(frame, left_thumb_px, circle_radius, circle_color, circle_thickness)
+        cv2.circle(frame, left_index_px, circle_radius, circle_color, circle_thickness)
+        cv2.circle(frame, right_thumb_px, circle_radius, circle_color, circle_thickness)
+        cv2.circle(frame, right_index_px, circle_radius, circle_color, circle_thickness)
         
-        # Calculate distance between pinch centers (for volume control)
-        pinch_center_distance = np.sqrt(
+        # Draw filled circles at pinch centers
+        cv2.circle(frame, left_pinch_center, 8, (255, 255, 255), -1)  # White filled dot
+        cv2.circle(frame, right_pinch_center, 8, (255, 255, 255), -1)  # White filled dot
+        
+        # Draw vertical connection lines for each pinch
+        cv2.line(frame, left_thumb_px, left_index_px, (255, 255, 255), 2)  # White line for left pinch
+        cv2.line(frame, right_thumb_px, right_index_px, (255, 255, 255), 2)  # White line for right pinch
+        
+        # Calculate line properties for volume visualization
+        line_length = int(np.sqrt(
             (right_pinch_center[0] - left_pinch_center[0])**2 + 
             (right_pinch_center[1] - left_pinch_center[1])**2
+        ))
+        angle = np.arctan2(
+            right_pinch_center[1] - left_pinch_center[1],
+            right_pinch_center[0] - left_pinch_center[0]
         )
         
-        # Display the distance between pinch centers and volume level
+        # Calculate midpoint for label placement
         midpoint = (
             (left_pinch_center[0] + right_pinch_center[0]) // 2,
             (left_pinch_center[1] + right_pinch_center[1]) // 2
         )
         
-        cv2.putText(frame, f"Dist: {pinch_dist:.1f}px", 
-                   (midpoint[0] - 45, midpoint[1] - 10), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        # Draw volume bars spanning the entire connection line
+        bar_width = 6
+        bar_spacing = 6  # Increased spacing for better visibility
+        num_bars = max(10, min(30, line_length // (bar_width + bar_spacing)))
         
-        cv2.putText(frame, f"Vol: {volume_display:.1f}/10", 
-                   (midpoint[0] - 45, midpoint[1] + 15), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-    # Display values with proper scaling
-    volume_display = volume * 10.0  # Convert back to 0-10 scale for display
+        # Get or generate audio data for visualization
+        try:
+            samples = list(audio_buffer.queue)
+            if len(samples) < num_bars:
+                samples = [0] * (num_bars - len(samples)) + samples
+            recent_samples = samples[-num_bars:]
+        except:
+            # Fallback visualization based on volume
+            recent_samples = []
+            for i in range(num_bars):
+                pos = abs((i - (num_bars // 2)) / (num_bars // 2))
+                amp = volume * (1 - pos * 0.6)
+                recent_samples.append(amp)
+        
+        # Draw each volume bar along the line
+        for i in range(num_bars):
+            # Calculate position along the line
+            pos = i / (num_bars - 1)  # 0 to 1
+            x = int(left_pinch_center[0] + pos * (right_pinch_center[0] - left_pinch_center[0]))
+            y = int(left_pinch_center[1] + pos * (right_pinch_center[1] - left_pinch_center[1]))
+            
+            # Calculate bar height 
+            amp = recent_samples[i]
+            max_bar_height = 60  # Maximum bar height
+            bar_height = int(max_bar_height * min(1.0, amp * 2.0))
+            
+            # Calculate color gradient (blue to green)
+            b = max(0, 255 - (i * 255 // num_bars))
+            g = min(255, i * 255 // num_bars)
+            
+            # Calculate perpendicular direction for the bar
+            perp_x = int(np.sin(angle) * bar_height)
+            perp_y = int(-np.cos(angle) * bar_height)
+            
+            # Draw the volume bar perpendicular to the line
+            cv2.line(frame, 
+                    (x, y), 
+                    (x + perp_x, y + perp_y), 
+                    (b, g, 255), bar_width)
+        
+        # Draw SPEED label and value BELOW left hand
+        cv2.putText(frame, "SPEED", 
+                   (left_pinch_center[0] - 30, left_pinch_center[1] + 35), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        cv2.putText(frame, f"{speed:.1f}x", 
+                   (left_pinch_center[0] - 20, left_pinch_center[1] + 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Draw PITCH label and value BELOW right hand
+        cv2.putText(frame, "PITCH", 
+                   (right_pinch_center[0] - 30, right_pinch_center[1] + 35), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        cv2.putText(frame, f"{pitch_hz:.0f}Hz", 
+                   (right_pinch_center[0] - 35, right_pinch_center[1] + 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Draw VOLUME label and value at center, above the line
+        text_offset = 35  # Offset for text above the line
+        perp_text_x = int(np.sin(angle) * text_offset)
+        perp_text_y = int(-np.cos(angle) * text_offset)
+        
+        vol_text_pos = (midpoint[0] + perp_text_x - 30, midpoint[1] + perp_text_y - 10)
+        vol_value_pos = (midpoint[0] + perp_text_x - 12, midpoint[1] + perp_text_y + 15)
+        
+        cv2.putText(frame, "VOLUME", vol_text_pos, 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        cv2.putText(frame, f"{volume_display:.1f}", vol_value_pos, 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     
-    cv2.putText(frame, f"Volume: {volume_display:.2f}/10", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    cv2.putText(frame, f"Speed: {speed:.2f}x", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    cv2.putText(frame, f"Pitch: {pitch_hz if 'pitch_hz' in locals() else 220:.0f}Hz", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    cv2.putText(frame, f"Track: {os.path.basename(song_files[current_track_index])}", (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 255, 200), 2)
-    cv2.putText(frame, "Controls:", (10, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 255), 1)
-    cv2.putText(frame, "- Left pinch: Speed | Right pinch: Pitch | Hand distance: Volume", (10, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 255), 1)
-    cv2.putText(frame, "- Q: Quit | R: Reset | N: Next | P: Previous", (10, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 255), 1)
-
+    # Display only track info at the bottom (minimal display)
+    track_info = f"{os.path.basename(song_files[current_track_index])}"
+    cv2.putText(frame, track_info, 
+               (10, frame_height - 15), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 200), 1)
+    
+    # Create display window with proper size
+    cv2.namedWindow("DJ Controller (Pyo)", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("DJ Controller (Pyo)", 1280, 720)
     cv2.imshow("DJ Controller (Pyo)", frame)
     key = cv2.waitKey(5) & 0xFF
 
@@ -232,13 +344,16 @@ while cap.isOpened():
         speed = 1.0
         pitch_hz = 440
         pitch_transpo = 0
-        player.setMul(float(volume))
+        if pitch_shifter:
+            pitch_shifter.setMul(float(volume))
         player.setSpeed(float(speed))
         if pitch_shifter:
             pitch_shifter.setTranspo(pitch_transpo)
 
 cap.release()
 cv2.destroyAllWindows()
+is_recording = False  # Stop the recording thread
+time.sleep(0.5)  # Give time for the thread to exit
 s.stop()
 s.shutdown()
 print("Exited cleanly.")
